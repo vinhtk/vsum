@@ -2,6 +2,7 @@ import json
 import os
 import numpy as np
 import uuid
+import threading
 
 from vsum_tools import *
 from vasnet import *
@@ -111,17 +112,20 @@ delayInsert = 5
 
 def insertToDb(sc): 
     # run sql insert
-    print("BEGIN INSERT")
+    print("BEGIN INSERT:" + str(len(batchData)))
     print(batchData)
     
-    client.execute('INSERT INTO Event(eventId, cameraId, eventName, eventTime, score) VALUES', batchData)
-    batchData.clear()
+    if (len(batchData) > 0):
+        client.execute('INSERT INTO Event(eventId, cameraId, eventName, eventTime, score) VALUES', batchData)
+        batchData.clear()
 
+    print("END INSERT")
     # re-schedule next run
     sc.enter(delayInsert, 1, insertToDb, (sc,))
 
 
-if __name__ == '__main__':
+def startQueue():
+    print("START QUEUE")
     from rabbitmq_manager import RabbitMQManager, QueueDefinition
     definitions = [
         QueueDefinition(queue, process_message, auto_ack=True)
@@ -129,14 +133,28 @@ if __name__ == '__main__':
     manager = RabbitMQManager(uri)
     try:
         manager.run(definitions)
-
-        # start schedule task
-        s.enter(delayInsert, 1, insertToDb, (s,))
-        s.run()
-
     except:
         logger.error()
     finally:
         manager.stop()
 
     logger.info('STOP')
+
+def startScheduleInsert():
+    # start schedule task
+    print("START SCHEDULE")
+    s.enter(delayInsert, 1, insertToDb, (s,))
+    s.run()    
+
+if __name__ == '__main__':
+    try:
+        # creating thread
+        t1 = threading.Thread(target=startQueue)
+        t2 = threading.Thread(target=startScheduleInsert)
+    
+        # starting thread 1
+        t1.start()
+        # starting thread 2
+        t2.start()
+    except:
+        print("Error: unable to start thread")
