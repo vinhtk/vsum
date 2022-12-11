@@ -1,12 +1,14 @@
 import json
 import os
 import numpy as np
+import uuid
 
 from vsum_tools import *
 from vasnet import *
 from datetime import datetime
 from log_helper import LogHelper as logger
 from clickhouse_driver import Client
+import sched, time
 
 segment_length = 2 #in seconds
 sampling_rate = 2 #in frame per second
@@ -64,24 +66,20 @@ db_user = os.environ.get('DB_USER') or "vinhtk"
 db_password = os.environ.get('DB_PASSWORD') or "91ZEAtafoX7Q"
 
 # connect to clickhouse
+settings = {'async_insert': 1}
 client = Client(host=db_host, database=db_database,
-                user=db_user, password=db_password)
+                user=db_user, password=db_password, settings=settings)
+
+batchData = []
 
 def pushScore(camId, score):
-    args = {'camId':camId, 'score':score}
-    sql = """
-    INSERT INTO Event(eventId, cameraId, eventName, eventTime, score)
-    SELECT
-        toString(generateUUIDv4()) AS eventId,
-        '{camId}' AS cameraId,
-        'VSUM' AS eventName,
-        now() AS eventTime,
-        {score} AS score
-    FROM system.numbers
-    LIMIT 1
-    SETTINGS async_insert=1, wait_for_async_insert=0;;
-    """.format(**args)
-    client.execute(sql)
+    batchData.append({
+        'eventId': str(uuid.uuid4()),
+        'cameraId': camId,
+        'eventName': 'VSUM',
+        'eventTime': datetime.now(),
+        'score': score
+    })
 
 def process_message(ch, method, props, body):
     # print(ch, method, properties, body)
@@ -105,6 +103,23 @@ def process_message(ch, method, props, body):
     except:
         logger.error()
 
+# init schedule to run insert
+s = sched.scheduler(time.time, time.sleep)
+
+# delay insert every 5 seconds
+delayInsert = 5
+
+def insertToDb(sc): 
+    # run sql insert
+    print("BEGIN INSERT")
+    print(batchData)
+    
+    client.execute('INSERT INTO Event(eventId, cameraId, eventName, eventTime, score) VALUES', batchData)
+    batchData.clear()
+
+    # re-schedule next run
+    sc.enter(delayInsert, 1, insertToDb, (sc,))
+
 
 if __name__ == '__main__':
     from rabbitmq_manager import RabbitMQManager, QueueDefinition
@@ -114,6 +129,11 @@ if __name__ == '__main__':
     manager = RabbitMQManager(uri)
     try:
         manager.run(definitions)
+
+        # start schedule task
+        s.enter(delayInsert, 1, insertToDb, (s,))
+        s.run()
+
     except:
         logger.error()
     finally:
