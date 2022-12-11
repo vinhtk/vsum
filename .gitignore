@@ -1,0 +1,9 @@
+test_save_load_frame/
+tmp/
+individual_frames_and_generated_summary/
+*_output/
+__pycache__/
+*.pth.tar
+*.tar.pth
+*vasnet_retrain*
+ac-sum-gan-retrain*
