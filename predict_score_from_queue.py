@@ -82,6 +82,8 @@ def pushScore(camId, score):
         'score': score
     })
 
+batchFrame = []
+
 def process_message(ch, method, props, body):
     # print(ch, method, properties, body)
     try:
@@ -90,19 +92,26 @@ def process_message(ch, method, props, body):
         # with open(argument.file_name, 'r') as f:  inp = json.load(f)
         inp = json.loads(body)
         camId = inp["Attributes"]["CapturedBy"]
-        # ai function here
-        features = extract_features_from_images(model_func, preprocess_func, target_size, inp['Images'])
-        aonet = AONet()
-        aonet.initialize(f_len = len(features[0]))
-        aonet.load_model(model_file_path)
-        predict = aonet.eval(features)
-        mean = np.mean(predict)
+        batchFrame.append({
+            "camId": camId,
+            "frames": inp['Images']
+        })
+        # mean = np.mean(predict)
         # print(predict)
-        print("CAM: {0} - {1}".format(camId, mean))
-        pushScore(camId, mean)
+        # print("CAM: {0} - {1}".format(camId, mean))
+        # pushScore(camId, mean)
 
     except:
         logger.error()
+
+def extractFeaturesFromFrames(inp):
+    # ai function here
+    features = extract_features_from_images(model_func, preprocess_func, target_size, inp)
+    aonet = AONet()
+    aonet.initialize(f_len = len(features[0]))
+    aonet.load_model(model_file_path)
+    predict = aonet.eval(features)
+    return predict
 
 # init schedule to run insert
 s = sched.scheduler(time.time, time.sleep)
@@ -146,15 +155,67 @@ def startScheduleInsert():
     s.enter(delayInsert, 1, insertToDb, (s,))
     s.run()    
 
+delayExtract = 5
+def extractFeatures(sc): 
+    # run sql insert
+    print("BEGIN EXTRACT:" + str(len(batchFrame)))
+    
+    if (len(batchFrame) > 0):
+        print("EXTRACTING: " + str(len(batchFrame)))
+        extractFrames = []
+        camera = []
+
+        for frames in batchFrame:
+            for frame in frames['frames']:
+                extractFrames.append(frame)
+                camera.append(frames['camId'])
+        
+        # print(camera)
+        print("EXTRACTING FRAME: " + str(len(extractFrames)))
+        scores = extractFeaturesFromFrames(extractFrames)
+        # print(scores)
+        
+        mergeCamera = zip(camera, scores)
+        result = dict([])
+
+        for cam in mergeCamera:
+            if cam[0] not in result:
+                result[cam[0]] = []
+            result[cam[0]].append(cam[1])
+
+        # print(result)
+
+        finalResult = dict([])
+        for res in result:
+            finalResult[res] = np.mean(result[res])
+            pushScore(res, finalResult[res])
+            
+        print(finalResult)
+
+        batchFrame.clear()
+
+    print("END EXTRACT")
+    # re-schedule next run
+    sc.enter(delayExtract, 1, extractFeatures, (sc,))
+
+def startExtractFeatures(): 
+    # start extract features task
+    print("START EXTRACT")
+    s.enter(delayExtract, 1, extractFeatures, (s,))
+    s.run()  
+
 if __name__ == '__main__':
     try:
         # creating thread
         t1 = threading.Thread(target=startQueue)
-        t2 = threading.Thread(target=startScheduleInsert)
+        t2 = threading.Thread(target=startExtractFeatures)
+        t3 = threading.Thread(target=startScheduleInsert)
     
         # starting thread 1
         t1.start()
         # starting thread 2
         t2.start()
+        # starting thread 3
+        t3.start()
     except:
         print("Error: unable to start thread")
